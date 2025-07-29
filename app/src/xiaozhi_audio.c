@@ -113,6 +113,9 @@ typedef struct
     uint16_t                downlink_decode_out[XZ_SPK_FRAME_LEN / 2];
     rt_slist_t              downlink_decode_busy;
     rt_slist_t              downlink_decode_idle;
+#if defined(NERTC_AI)
+    uint8_t                 resmaple_decode_out[XZ_MIC_FRAME_LEN];
+#endif // NERTC_AI
 } xz_audio_t;
 
 struct udp_pcb *udp_pcb;
@@ -359,6 +362,53 @@ static void audio_write_and_wait(xz_audio_t *thiz, uint8_t *data, uint32_t data_
         rt_thread_mdelay(10);
     }
 }
+
+#if defined(NERTC_AI)
+#define IN_RATE   24000
+#define OUT_RATE  16000
+#define RATIO_Q30 715827883  /* 2/3 * 2^30 */
+
+/* 16-tap low-pass FIR @ 0.66*Nyquist(12kHz), 24kHz Fs */
+static const int16_t fir_coef[16] = {
+    -128,  -256,  -512,  -1024, -2048, -3072,  8192, 28416,
+    28416,  8192, -3072, -2048, -1024,  -512,  -256,  -128
+};
+
+/* 64-bit 累加器保证精度 */
+static inline int32_t fir_q15(const int16_t *x, const int16_t *h, int len)
+{
+    int64_t acc = 0;
+    for (int i = 0; i < len; ++i)
+        acc += (int64_t)x[i] * h[i];
+    return (int32_t)(acc >> 15);
+}
+
+/* 主函数：in[3*n] -> out[2*n] */
+int pcm_24k_to_16k(const int16_t *in, int in_len,
+                   int16_t *out, int *out_len)
+{
+    int16_t buf[16] = {0};      /* 滑动窗 */
+    int      idx = 0;           /* 窗内游标 */
+    int      i = 0, o = 0;
+    int32_t  phase = 0;         /* Q30 相位累加器 */
+
+    while (i < in_len) {
+        /* 移入新样本 */
+        for (int k = 15; k > 0; --k) buf[k] = buf[k-1];
+        buf[0] = in[i++];
+
+        phase += RATIO_Q30;
+        if (phase >= (1<<30)) {
+            phase -= (1<<30);
+            out[o++] = (int16_t)fir_q15(buf, fir_coef, 16);
+            if (o >= *out_len) break;
+        }
+    }
+    *out_len = o;
+    return 0;
+}
+#endif // NERTC_AI
+
 #define NERTC_USE_OPUS 1
 static void xz_opus_thread_entry(void *p)
 {
@@ -450,7 +500,9 @@ static void xz_opus_thread_entry(void *p)
                 RT_ASSERT(0);
             }
 #if defined(NERTC_AI)
-            nertc_audio_speaker(queue->data, queue->data_len, (uint8_t *)thiz->downlink_decode_out, len);
+            int out_len = XZ_MIC_FRAME_LEN / 2;
+            pcm_24k_to_16k((int16_t *)thiz->downlink_decode_out, res, (int16_t *)thiz->resmaple_decode_out, &out_len);
+            nertc_audio_speaker(queue->data, queue->data_len, (uint8_t *)thiz->resmaple_decode_out, XZ_MIC_FRAME_LEN);
 #endif // NERTC_AI
 
             audio_write_and_wait(thiz, (uint8_t *)thiz->downlink_decode_out, len);
