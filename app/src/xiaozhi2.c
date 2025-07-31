@@ -982,8 +982,11 @@ void OnError(const nertc_sdk_callback_context_t* ctx, int code, const char* msg)
     rt_kprintf("NERtc OnError: %d, %s\r\n", code, msg);
 }
 
+nertc_sdk_channel_state_e nertc_status = NERTC_SDK_CHANNEL_STATE_JOINED;
+
 void OnChannelStatusChanged(const nertc_sdk_callback_context_t* ctx, nertc_sdk_channel_state_e status, const char *msg) {
     rt_kprintf("NERtc OnChannelStatusChanged: %d, %s\r\n", (int)status, msg);
+    nertc_status = status;
 }
 
 void nertc_audio_send(uint8_t *data, int len);
@@ -1029,7 +1032,9 @@ void OnAsrCaptionResult(const nertc_sdk_callback_context_t* ctx, nertc_sdk_asr_c
     const int max_len = 100;
     for (size_t i = 0; i < result_count; i++)
     {
-        xiaozhi_ui_chat_output(results[i].content);
+        if (i == 0) {
+            xiaozhi_ui_chat_output(results[i].content);
+        }
         int len = strlen(results[i].content);
         rt_kprintf("NERtc OnAsr:%lld,%d,content:", results[i].user_id, len);
         for (int j = 0; j < len; j+=max_len) {
@@ -1044,7 +1049,13 @@ void OnAiData(const nertc_sdk_callback_context_t* ctx, nertc_sdk_ai_data_result_
     if (!ai_data) 
         return;
 
-    rt_kprintf("NERtc OnAiData type:%s data:%s\r\n", ai_data->type, ai_data->data);
+    rt_kprintf("NERtc OnAiData type:%s data:", ai_data->type);
+    int len = strlen(ai_data->data);
+    const int max_len = 100;
+    for (int j = 0; j < len; j+=max_len) {
+        rt_kprintf("%.*s", max_len, ai_data->data + j);
+    }
+    rt_kprintf("\r\n");
     if (strcmp(ai_data->data, "audio.agent.speech_started") == 0) {
         xiaozhi_ui_chat_status("讲话中");
     } else if (strcmp(ai_data->data, "audio.agent.speech_stopped") == 0) {
@@ -1061,7 +1072,9 @@ void OnAudioData(const nertc_sdk_callback_context_t* ctx, uint64_t uid, nertc_sd
     //     count = 0;
     // }
     // count++;
-    xz_audio_downlink(encoded_frame->data, encoded_frame->length, NULL, 0);
+    if (nertc_status == NERTC_SDK_CHANNEL_STATE_JOINED) {
+        xz_audio_downlink(encoded_frame->data, encoded_frame->length, NULL, 0);
+    }
 }
 static int check_nrtc_internet_access()
 {
@@ -1155,9 +1168,10 @@ void nertc_leave_ui() {
         xiaozhi_ui_chat_output("正在退出...");
         xz_mic(0);
         xz_speaker(0);
-        nertc_leave(engine_);
+        int ret = nertc_leave(engine_);
         // nertc_destroy_engine(engine_);
         // engine_ = NULL;
+        rt_kprintf("nertc_leave, ret:%d\r\n", ret);
     }
 }
 
@@ -1203,8 +1217,8 @@ void nertc_audio_speaker(uint8_t *enc_data, int enc_len, uint8_t* pcm_data, int 
         audio_frame.type = NERTC_SDK_AUDIO_PCM_16;
         audio_frame.data = pcm_data;
         audio_frame.length = pcm_len;
-        int duration = pcm_len / 2 / 24;
-        nertc_sdk_audio_config_t audio_config = {24000, duration, 1, 24 * duration};
+        int duration = pcm_len / 2 / 16;
+        nertc_sdk_audio_config_t audio_config = {16000, duration, 1, 16 * duration};
         audio_frame.config = audio_config;
         nertc_push_audio_reference_frame(engine_, NERTC_SDK_MEDIA_MAIN_AUDIO, &encoded_frame, &audio_frame);
     }
